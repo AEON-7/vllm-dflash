@@ -18,53 +18,100 @@
 
 ## Performance (DGX Spark GB10)
 
-### Single-Stream Throughput
+All numbers below are on **unmodified `ghcr.io/aeon-7/vllm-dflash:latest`**
+running `AEON-7/DFlash-Qwen3.5-27B-Uncensored-NVFP4`, DFlash `k=15`, 65K
+context, the tuned configuration shown further down.  Measurements use
+**natural-language prompts** with `temperature=0` for full determinism; see
+[BENCHMARKS.md](BENCHMARKS.md) for the exact script, prompts, and raw data.
 
-| Speculative Tokens | tok/s (short) | tok/s (long) | Speedup |
-|:---:|:---:|:---:|:---:|
-| **Baseline** (no DFlash) | 12.2 | 12.2 | 1.0x |
-| **5 tokens** | 29.5 | 25.4 | 2.1-2.4x |
-| **10 tokens** | 28.7 | 25.5 | 2.1-2.4x |
-| **15 tokens** | **33.2** | **26.3** | **2.2-2.7x** |
+### Single-Stream Throughput by Prompt Style
 
+Post-warmup steady-state (3-run average, variance <0.3%).
+
+| Prompt style | Tok/s | TPOT p50 | Notes |
+|:---|:---:|:---:|:---|
+| **Code** (algorithm + docstrings + type hints) | **64.0** | 15.2 ms | Highly patterned — DFlash excels |
+| **Reasoning** (math step-by-step) | **54.0** | 18.4 ms | Structured, predictable tokens |
+| **Dialogue** (chat continuation) | **38.4** | 26.0 ms | Natural conversational |
+| **Prose** (free-form essay) | **29.5** | 33.6 ms | Creative text — acceptance length drops |
+
+DFlash acceptance length (tokens accepted per 15-token draft) ranges from
+~2.0 on prose to ~5.5 on code.  Per-position acceptance decays from ~78% at
+position 0 to <3% by position 8.
+
+### Concurrency Scaling — Spark-Tuned Config, Natural Prompts
+
+**Code** (best case for DFlash):
+
+| Concurrency | Aggregate tok/s | Median per-request | TTFT p50 | TPOT p50 |
+|:---:|:---:|:---:|:---:|:---:|
+| c=1 | **64.0** | 64.0 tok/s | 239 ms | 15.2 ms |
+| c=4 | **181.5** | 45.4 tok/s | 408 ms | 21.2 ms |
+| c=8 | **262.8** | 32.9 tok/s | 564 ms | 29.4 ms |
+| c=16 | **327.9** | 20.5 tok/s | 884 ms | 47.1 ms |
+
+**Prose** (worst case for DFlash):
+
+| Concurrency | Aggregate tok/s | Median per-request | TTFT p50 | TPOT p50 |
+|:---:|:---:|:---:|:---:|:---:|
+| c=1 | **29.5** | 29.5 tok/s | 225 ms | 33.6 ms |
+| c=4 | **83.5** | 21.1 tok/s | 432 ms | 46.8 ms |
+| c=8 | **122.4** | 15.3 tok/s | 557 ms | 64.4 ms |
+| c=16 | **151.8** | 9.5 tok/s | 860 ms | 104 ms |
+
+**At c=16 the container serves 328 tok/s on coding workloads, 152 tok/s on
+free-form prose** — both while holding TTFT p50 under 900 ms.
+
+### Why the Spark-Tuned Config Matters
+
+The default launch settings on this image (`MAX_NUM_SEQS=4`,
+`MAX_NUM_BATCHED_TOKENS=8192`) hit queue saturation at c=8: under random-token
+load, TTFT p50 went to **14,688 ms** while aggregate throughput plateaued at
+~70 tok/s.  The tuned configuration fixes both:
+
+| | Default | Spark-tuned |
+|---|---|---|
+| `MAX_NUM_SEQS` | 4 | **16** |
+| `MAX_NUM_BATCHED_TOKENS` | 8192 | **32768** |
+| `GPU_MEMORY_UTILIZATION` | 0.80 | **0.85** |
+| c=8 aggregate tok/s (code) | queue-saturated | **262.8** |
+| c=16 | not reachable | **327.9** |
+
+Single-stream throughput is effectively unchanged (+1.9% at c=1) — the value
+of the tuned config is entirely in multi-session scaling.
+
+### Recommended Configuration
+
+```bash
+docker run -d --name vllm-dflash \
+    --gpus all --network host --ipc host --ulimit memlock=-1:-1 \
+    -v /path/to/model:/models/target:ro \
+    -v /path/to/drafter:/models/dflash-drafter:ro \
+    -e MODEL_PATH=/models/target \
+    -e DFLASH_DRAFTER=/models/dflash-drafter \
+    -e DFLASH_NUM_SPEC_TOKENS=15 \
+    -e MAX_MODEL_LEN=65536 \
+    -e MAX_NUM_SEQS=16 \
+    -e MAX_NUM_BATCHED_TOKENS=32768 \
+    -e GPU_MEMORY_UTILIZATION=0.85 \
+    -e ATTENTION_BACKEND=flash_attn \
+    ghcr.io/aeon-7/vllm-dflash:latest
 ```
-Single-Stream tok/s (DGX Spark GB10, Qwen3.5-27B NVFP4)
 
-  35 ┤                                              ██
-     │                                              ██
-  30 ┤          ██            ██                     ██
-     │          ██            ██                     ██
-  25 ┤          ██            ██                     ██
-     │          ██            ██                     ██
-  20 ┤          ██            ██                     ██
-     │          ██            ██                     ██
-  15 ┤          ██            ██                     ██
-     │    ██    ██            ██                     ██
-  10 ┤    ██    ██            ██                     ██
-     │    ██    ██            ██                     ██
-   5 ┤    ██    ██            ██                     ██
-     │    ██    ██            ██                     ██
-   0 └────────────────────────────────────────────────────
-       No DFlash   5 tokens     10 tokens     15 tokens
-        12.2        29.5          28.7           33.2
-```
+### Summary Metrics
 
-### Throughput Scaling with Concurrency (15 spec tokens)
-
-| Concurrent Requests | Total tok/s | Per-Request Latency |
-|:---:|:---:|:---:|
-| 1 | 33.2 | 6.0s |
-| 2 | 47.9 | 7.7s |
-| 4 | 85.5 | 8.3s |
-| 8 | 92.5 | 12.9s |
-
-| Metric | Value |
+| Metric (Spark-tuned) | Value |
 |---|---|
-| **TTFT** | 98-138 ms |
-| **ITL (p50/p99)** | 81/88 ms |
-| **Max Context** | 64K default (model supports up to 256K) |
+| **Peak single-stream** | **64.0 tok/s** (code) |
+| **Peak aggregate (c=16)** | **327.9 tok/s** (code), 151.8 tok/s (prose) |
+| **TPOT p50 range** | 15 ms (code, c=1) → 104 ms (prose, c=16) |
+| **TTFT p50 range** | 225 ms (c=1) → 884 ms (c=16) |
 | **Model Size** | ~20 GB (NVFP4) / ~52 GB (BF16) |
-| **Default Config** | 15 spec tokens, 4 seqs, 64K context |
+| **KV cache headroom** | 70 GiB free after weights + graphs |
+| **Max Context** | 65K default (model supports up to 262K) |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full methodology and the
+reproducible benchmark script.
 
 ---
 
