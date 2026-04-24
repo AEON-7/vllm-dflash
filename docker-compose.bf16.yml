@@ -27,8 +27,12 @@ services:
       # ── DFlash speculative decoding ──
       - DFLASH_DRAFTER=${DFLASH_DRAFTER:-z-lab/Qwen3.5-27B-DFlash}
       - DFLASH_NUM_SPEC_TOKENS=${DFLASH_NUM_SPEC_TOKENS:-15}
-      # ── Resource tuning (BF16 needs more memory than NVFP4) ──
-      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-4096}
+      # ── Resource tuning (BF16 uses more memory than NVFP4 — lower ceilings) ──
+      # BF16 weights are ~52 GB vs ~20 GB for NVFP4, leaving less room for KV.
+      # Context + concurrency are intentionally smaller than the NVFP4 defaults.
+      # Do NOT raise MAX_NUM_BATCHED_TOKENS without dropping MAX_MODEL_LEN or
+      # MAX_NUM_SEQS accordingly — you will OOM the 128 GB unified memory.
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}
       - MAX_NUM_SEQS=${MAX_NUM_SEQS:-4}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.85}
       - MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}

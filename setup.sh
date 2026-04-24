@@ -3,6 +3,11 @@
 # DFlash Quick Setup
 # Generates .env.dflash with a random API key and prompts for
 # required configuration.
+#
+# The written defaults match the "Spark-tuned" configuration
+# documented in README.md.  Do NOT raise MAX_NUM_BATCHED_TOKENS
+# above 32768 on a single-card GB10 — it reserves a scheduler
+# buffer that will OOM the 128 GB unified memory.
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -41,18 +46,18 @@ MODEL_HOST_PATH=${MODEL_PATH}
 DFLASH_DRAFTER=z-lab/Qwen3.5-27B-DFlash
 DFLASH_NUM_SPEC_TOKENS=${SPEC_TOKENS}
 
-# Resources (DGX Spark GB10)
+# Resources — Spark-tuned configuration (see README.md §Configuration)
 MAX_MODEL_LEN=65536
-MAX_NUM_SEQS=4
+MAX_NUM_SEQS=16
 GPU_MEMORY_UTILIZATION=0.85
-MAX_NUM_BATCHED_TOKENS=65536
+MAX_NUM_BATCHED_TOKENS=32768
 EOF
 
 echo ""
 echo "Wrote ${ENV_FILE}"
 echo ""
 echo "To start:"
-echo "  docker compose --env-file ${ENV_FILE} -f docker-compose.dflash.yml up -d"
+echo "  docker compose --env-file ${ENV_FILE} up -d"
 echo ""
 echo "API endpoint: http://$(hostname -I | awk '{print $1}'):8000/v1"
-echo "API key: ${API_KEY}"
+echo "API key:      ${API_KEY}  (save this — you need it for every request)"
