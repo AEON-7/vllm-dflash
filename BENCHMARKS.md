@@ -122,6 +122,53 @@ Mean acceptance length on random input: **3.19 tokens per 15-token draft**.
 On natural text, effective acceptance length scales roughly linearly with
 the inverse of prompt entropy — prose ~2.0, dialogue ~3.3, code ~5.5.
 
+## TurboQuant extension benchmarks
+
+All numbers below measured on the same stack with the
+[TurboQuant extension container](turboquant/) enabled
+(`ENABLE_TURBOQUANT=1`, `TQ_KEY_BITS=4`, `TQ_VALUE_BITS=3`, 128-token ring buffer).
+
+### 5. Overhead vs baseline — code prompts, c=1..16
+
+| Concurrency | TQ off | TQ capture_only | TQ hybrid | Δ hybrid vs off |
+|:---:|:---:|:---:|:---:|:---:|
+| c=1  | 64.02 | 61.50 | 61.71 | **-3.61%** |
+| c=4  | 181.47 | 175.71 | 175.79 | **-3.13%** |
+| c=8  | 262.77 | 255.19 | 252.78 | **-3.80%** |
+| c=16 | 327.89 | 314.93 | 318.36 | **-2.91%** |
+
+### 6. Overhead vs baseline — prose prompts, c=1..16
+
+| Concurrency | TQ off | TQ capture_only | TQ hybrid | Δ hybrid vs off |
+|:---:|:---:|:---:|:---:|:---:|
+| c=1  | 29.46 | 28.14 | 28.49 | **-3.29%** |
+| c=4  | 83.53 | 80.28 | 80.72 | **-3.36%** |
+| c=8  | 122.41 | 117.67 | 119.17 | **-2.65%** |
+| c=16 | 151.81 | 147.43 | 148.80 | **-1.98%** |
+
+### 7. Long-context decode throughput — c=1, 256 output tokens
+
+The hybrid mode's decode cost stays flat until the 128-token exact-precision
+ring buffer overflows, then grows with the compressed history the attention
+has to dequantize.
+
+| Context tokens | TQ off decode tok/s | TQ hybrid decode tok/s | Δ |
+|:---:|:---:|:---:|:---:|
+| 4,000  | 31.81 | 33.35 | **+4.85%** |
+| 16,000 | 23.92 | 24.20 | **+1.18%** |
+| 32,000 | 19.43 | 17.22 | **-11.38%** |
+
+### Interpretation
+
+TurboQuant's decode-speed story on DGX Spark is:
+- **≤16K context: essentially free** (within noise)
+- **32K+ context: measurable decode penalty** (~11% at 32K)
+
+The flip side — and the real reason to enable TurboQuant — is **KV cache
+capacity**: with 4-bit keys + 3-bit values the compressed store is roughly
+3.76× smaller than FP16, so multi-session workloads at long context fit
+where they would otherwise OOM.
+
 ## Key findings
 
 1. **DFlash is content-sensitive, not JIT-sensitive.** Variance across runs
